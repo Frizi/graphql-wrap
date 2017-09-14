@@ -1,13 +1,4 @@
-const fs = require('fs')
-const path = require('path')
-const express = require('express')
-const bodyParser = require('body-parser');
-const cors = require('cors');
-
-const { makeExecutableSchema } = require('graphql-tools')
-const { graphqlExpress } = require('graphql-server-express');
-const { GraphQLDateTime } = require('graphql-iso-date');
-
+/* fetching */
 const fetch = require('node-fetch')
 const querystring = require('querystring')
 
@@ -23,13 +14,6 @@ const params = object => {
     return empty ? '' : '?' + querystring.stringify(args)
 }
 
-// /users
-// /users/?ids[]
-// /users/:id
-// /posts
-// /posts/?ids[]
-// /posts/:id
-// /posts/:id/comments
 const API = 'http://localhost:4567'
 const fetchJson = path => fetch(`${API}${path}`).then(r => r.json())
 
@@ -42,55 +26,102 @@ const fetchPost = id => fetchJson(`/posts/${id}`)
 const fetchPosts = ids => fetchJson(`/posts${params({ids})}`)
 const fetchPostComments = id => fetchJson(`/posts/${id}/comments`)
 
+/* data loader */
+const DataLoader = require('dataloader')
+
+const makeLoaders = () => {
+    const userLoader = new DataLoader(fetchUsers)
+    const postLoader = new DataLoader(fetchPosts)
+    const userPostsLoader = new DataLoader(keys => Promise.all(keys.map(fetchUserPosts)))
+    const userCommentsLoader = new DataLoader(keys => Promise.all(keys.map(fetchUserComments)))
+    const postCommentsLoader = new DataLoader(keys => Promise.all(keys.map(fetchPostComments)))
+
+    const fetchAll = (fetchMethod, loader) => async () => {
+        const list = await fetchMethod()
+        list.forEach(object => loader.prime(object.id, object))
+        return list
+    }
+
+    return {
+        userLoader,
+        postLoader,
+        userPostsLoader,
+        userCommentsLoader,
+        postCommentsLoader,
+        fetchAllUsers: fetchAll(fetchUsers, userLoader),
+        fetchAllPosts: fetchAll(fetchPosts, postLoader),
+    }
+}
+
+/* resolvers */
+const { GraphQLDateTime } = require('graphql-iso-date');
+
 const resolvers = {
     DateTime: GraphQLDateTime,
     Query: {
-        users (obj, args) {
-            return fetchUsers(args.ids)
+        user (obj, args, {userLoader}) {
+            return userLoader.load(args.id)
         },
-        user (obj, args) {
-            return fetchUser(args.id)
+        users (obj, args, {userLoader, fetchAllUsers}) {
+            return args.ids ? userLoader.loadMany(args.ids) : fetchAllUsers()
         },
-        post (obj, args) {
-            return fetchPost(args.id)
+        post (obj, args, {postLoader}) {
+            return postLoader.load(args.id)
         },
-        posts (obj, args) {
-            return fetchPosts(args.ids)
+        posts (obj, args, {postLoader, fetchAllPosts}) {
+            return args.ids ? postLoader.loadMany(args.ids) : fetchAllPosts()
         }
     },
     User: {
-        posts (obj, args) {
-            return fetchUserPosts(obj.id)
+        posts (obj, args, {userPostsLoader}) {
+            return userPostsLoader.load(obj.id)
         },
-        comments (obj, args) {
-            return fetchUserComments(obj.id)
+        comments (obj, args, {userCommentsLoader}) {
+            return userCommentsLoader.load(obj.id)
         }
     },
     Post: {
-        comments (obj, args) {
-            return fetchPostComments(obj.id)
+        comments (obj, args, {postCommentsLoader}) {
+            return postCommentsLoader.load(obj.id)
         },
-        author (obj, args) {
-            return fetchUser(obj.authorId)
+        author (obj, args, {userLoader}) {
+            return userLoader.load(obj.authorId)
         }
     },
     Comment: {
-        author (obj, args) {
-            return fetchUser(obj.authorId)
+        author (obj, args, {userLoader}) {
+            return userLoader.load(obj.authorId)
+
         },
-        post (obj, args) {
-            return fetchPost(obj.postId)
+        post (obj, args, {postLoader}) {
+            return postLoader.load(obj.postId)
         }
     }
 }
 
-// schema
+/* schema */
+const fs = require('fs')
+const path = require('path')
+const { makeExecutableSchema } = require('graphql-tools')
+
 const typeDefs = fs.readFileSync(path.join(__dirname, 'schema.graphql'), { encoding: 'utf-8' })
+
 const schema = makeExecutableSchema({
     typeDefs,
     resolvers
 })
 
+/* express app */
+const express = require('express')
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const { graphqlExpress } = require('graphql-server-express');
+
 const app = express()
-app.use('/', cors(), bodyParser.json({type: '*/*'}), graphqlExpress({schema}))
+app.use('/', cors(), bodyParser.json({type: '*/*'}), graphqlExpress(
+    () => ({
+        schema,
+        context: makeLoaders()
+    })
+))
 app.listen(5678)

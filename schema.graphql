@@ -1,0 +1,38 @@
+scalar DateTime
+
+schema {
+    query: Query
+}
+
+type Query {
+    users(ids: [ID!]): [User!]!
+    user(id: ID!): User
+
+    posts(ids: [ID!]): [Post!]!
+    post(id: ID!): Post
+}
+
+type User {
+  id: ID!
+  name: String!
+  posts: [Post!]!
+  comments: [Comment!]!
+}
+
+type Post {
+  id: ID!
+  author: User!
+  comments: [Comment!]!
+  content: String!
+  createdAt: DateTime!
+}
+
+type Comment {
+  id: ID!
+  content: String!
+  author: User!
+  post: User!
+  createdAt: DateTime!
+}
+
+
